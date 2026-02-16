@@ -6,6 +6,7 @@ import {
   signInWithPopup,
   createUserWithEmailAndPassword,
   signInWithEmailAndPassword,
+  sendPasswordResetEmail,
 } from "../firebase";
 import { updateProfile } from "firebase/auth";
 import { useAuth } from "../context/AuthContext";
@@ -37,6 +38,9 @@ const Auth: React.FC = () => {
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const [rememberMe, setRememberMe] = useState(false);
   const [successMessage, setSuccessMessage] = useState("");
+  const [showForgotPassword, setShowForgotPassword] = useState(false);
+  const [forgotPasswordEmail, setForgotPasswordEmail] = useState("");
+  const [forgotPasswordLoading, setForgotPasswordLoading] = useState(false);
 
   // Mouse position for interactive illustration
   const [mousePos, setMousePos] = useState({ x: 0.5, y: 0.5 });
@@ -195,6 +199,51 @@ const Auth: React.FC = () => {
     setConfirmPassword("");
   };
 
+  const handleForgotPassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    
+    if (!forgotPasswordEmail.trim()) {
+      setErrors({ general: "Please enter your email address" });
+      return;
+    }
+    
+    if (!validateEmail(forgotPasswordEmail)) {
+      setErrors({ general: "Please enter a valid email address" });
+      return;
+    }
+
+    setForgotPasswordLoading(true);
+    setErrors({});
+
+    try {
+      await sendPasswordResetEmail(auth, forgotPasswordEmail);
+      setSuccessMessage("Password reset link sent! Check your email.");
+      setShowForgotPassword(false);
+      setForgotPasswordEmail("");
+    } catch (error: unknown) {
+      const firebaseError = error as { code?: string; message?: string };
+      let errorMessage = "Failed to send reset email. Please try again.";
+
+      switch (firebaseError.code) {
+        case "auth/user-not-found":
+          errorMessage = "No account found with this email address";
+          break;
+        case "auth/invalid-email":
+          errorMessage = "Invalid email address";
+          break;
+        case "auth/too-many-requests":
+          errorMessage = "Too many requests. Please try again later.";
+          break;
+        default:
+          errorMessage = firebaseError.message || errorMessage;
+      }
+
+      setErrors({ general: errorMessage });
+    } finally {
+      setForgotPasswordLoading(false);
+    }
+  };
+
   if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gray-100">
@@ -342,6 +391,12 @@ const Auth: React.FC = () => {
                 </label>
                 <button
                   type="button"
+                  onClick={() => {
+                    setShowForgotPassword(true);
+                    setForgotPasswordEmail(email);
+                    setErrors({});
+                    setSuccessMessage("");
+                  }}
                   className="text-sm text-gray-600 hover:text-gray-900 font-medium transition-colors"
                 >
                   Forgot password?
@@ -437,6 +492,79 @@ const Auth: React.FC = () => {
           </p>
         </div>
       </div>
+
+      {/* Forgot Password Modal */}
+      {showForgotPassword && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl p-6 w-full max-w-md shadow-xl">
+            <div className="flex justify-between items-center mb-4">
+              <h2 className="text-xl font-bold text-gray-900">Reset Password</h2>
+              <button
+                onClick={() => {
+                  setShowForgotPassword(false);
+                  setErrors({});
+                }}
+                className="text-gray-400 hover:text-gray-600 transition-colors"
+              >
+                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+            
+            <p className="text-gray-500 text-sm mb-4">
+              Enter your email address and we'll send you a link to reset your password.
+            </p>
+
+            {errors.general && (
+              <div className="p-3 bg-red-50 border border-red-200 rounded-xl mb-4">
+                <p className="text-red-600 text-center text-sm">{errors.general}</p>
+              </div>
+            )}
+
+            <form onSubmit={handleForgotPassword} className="space-y-4">
+              <AuthInput
+                id="forgotEmail"
+                type="email"
+                label="Email"
+                value={forgotPasswordEmail}
+                onChange={(e) => setForgotPasswordEmail(e.target.value)}
+                placeholder="suganthcl7@gmail.com"
+              />
+
+              <div className="flex gap-3">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowForgotPassword(false);
+                    setErrors({});
+                  }}
+                  className="flex-1 py-3 px-4 border border-gray-300 rounded-xl text-gray-700 font-medium hover:bg-gray-50 transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={forgotPasswordLoading}
+                  className="flex-1 py-3 px-4 bg-gray-900 text-white rounded-xl font-medium hover:bg-gray-800 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                >
+                  {forgotPasswordLoading ? (
+                    <>
+                      <svg className="animate-spin h-5 w-5 text-white" fill="none" viewBox="0 0 24 24">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                      </svg>
+                      Sending...
+                    </>
+                  ) : (
+                    "Send Reset Link"
+                  )}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
