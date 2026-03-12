@@ -5,6 +5,7 @@ import { useResume } from '../../context/ResumeContext';
 import ProgressBar from '../../components/ProgressBar';
 import FormField from '../../components/FormField';
 import StepNavigation from '../../components/StepNavigation';
+import SmartTextArea from '../../components/SmartTextArea';
 
 const PersonalInfo: React.FC = () => {
   const { resumeData, updatePersonalInfo } = useResume();
@@ -53,26 +54,25 @@ const PersonalInfo: React.FC = () => {
   const handleNext = () => {
     if (validateForm()) {
       updatePersonalInfo(formData);
-      // BACKEND HOOK HERE: Save personal info to JSON or temporary storage
       console.log('Saving personal info:', formData);
       navigate('/form/education');
     }
   };
 
-  const canProceed = formData.firstName && formData.lastName && formData.email && formData.phone;
+//   const canProceed = formData.firstName && formData.lastName && formData.email && formData.phone;
 
   return (
     <motion.div
-      initial={{ opacity: 0, x: 100 }}
-      animate={{ opacity: 1, x: 0 }}
-      exit={{ opacity: 0, x: -100 }}
-      transition={{ duration: 0.5 }}
+      initial={{ opacity: 0, y: 20 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0, y: -20 }}
+      transition={{ duration: 0.4 }}
       className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-8"
     >
       <ProgressBar 
         currentStep={1} 
-        totalSteps={5} 
-        steps={['Personal', 'Education', 'Experience', 'Skills', 'Extra']}
+        totalSteps={9} 
+        steps={['Personal', 'Education', 'Experience', 'Projects', 'Skills', 'Certifications', 'Achievements', 'Extra', 'Declaration']}
       />
 
       <motion.div
@@ -128,25 +128,27 @@ const PersonalInfo: React.FC = () => {
           />
         </div>
 
-        <FormField
-          label="Address"
-          value={formData.address}
-          onChange={(value) => handleInputChange('address', value)}
-          placeholder="City, State, Country"
-        />
+        <div className="mt-6 mb-6">
+            <FormField
+            label="Address"
+            value={formData.address}
+            onChange={(value) => handleInputChange('address', value)}
+            placeholder="City, State, Country"
+            />
+        </div>
 
-        <FormField
+        <SmartTextArea
           label="Professional Summary"
           value={formData.summary}
           onChange={(value) => handleInputChange('summary', value)}
-          placeholder="Brief overview of your professional background and goals..."
-          multiline
+          placeholder="Brief overview of your professional background and goals. Use the AI button to enhance your summary."
           rows={4}
+          type="summary"
         />
 
         <StepNavigation
           onNext={handleNext}
-          canGoNext={canProceed}
+          canGoNext={true}
           nextLabel="Continue to Education"
         />
       </motion.div>

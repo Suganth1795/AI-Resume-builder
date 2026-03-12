@@ -80,16 +80,16 @@ const Education: React.FC = () => {
 
   return (
     <motion.div
-      initial={{ opacity: 0, x: 100 }}
-      animate={{ opacity: 1, x: 0 }}
-      exit={{ opacity: 0, x: -100 }}
-      transition={{ duration: 0.5 }}
+      initial={{ opacity: 0, y: 20 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0, y: -20 }}
+      transition={{ duration: 0.4 }}
       className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-8"
     >
       <ProgressBar 
         currentStep={2} 
-        totalSteps={5} 
-        steps={['Personal', 'Education', 'Experience', 'Skills', 'Extra']}
+        totalSteps={9} 
+        steps={['Personal', 'Education', 'Experience', 'Projects', 'Skills', 'Certifications', 'Achievements', 'Extra', 'Declaration']}
       />
 
       <motion.div

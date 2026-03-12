@@ -6,6 +6,7 @@ import { useResume, Experience as ExperienceType } from '../../context/ResumeCon
 import ProgressBar from '../../components/ProgressBar';
 import FormField from '../../components/FormField';
 import StepNavigation from '../../components/StepNavigation';
+import SmartTextArea from '../../components/SmartTextArea';
 
 const Experience: React.FC = () => {
   const { resumeData, updateExperience } = useResume();
@@ -88,16 +89,14 @@ const Experience: React.FC = () => {
     }));
     
     updateExperience(validExperience);
-    // BACKEND HOOK HERE: Save experience data to JSON or temporary storage
     console.log('Saving experience:', validExperience);
-    navigate('/form/skills');
+    navigate('/form/projects');
   };
 
   const handleSkipExperience = () => {
     updateExperience([]);
-    // BACKEND HOOK HERE: Save empty experience data
     console.log('Skipping experience section');
-    navigate('/form/skills');
+    navigate('/form/projects');
   };
   const handleBack = () => {
     navigate('/form/education');
@@ -106,16 +105,16 @@ const Experience: React.FC = () => {
 
   return (
     <motion.div
-      initial={{ opacity: 0, x: 100 }}
-      animate={{ opacity: 1, x: 0 }}
-      exit={{ opacity: 0, x: -100 }}
-      transition={{ duration: 0.5 }}
+      initial={{ opacity: 0, y: 20 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0, y: -20 }}
+      transition={{ duration: 0.4 }}
       className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-8"
     >
       <ProgressBar 
         currentStep={3} 
-        totalSteps={5} 
-        steps={['Personal', 'Education', 'Experience', 'Skills', 'Extra']}
+        totalSteps={9} 
+        steps={['Personal', 'Education', 'Experience', 'Projects', 'Skills', 'Certifications', 'Achievements', 'Extra', 'Declaration']}
       />
 
       <motion.div
@@ -208,24 +207,28 @@ const Experience: React.FC = () => {
                 <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
                   Responsibilities <span className="text-red-500">*</span>
                 </label>
-                <div className="space-y-2">
+                <div className="space-y-4">
                   {experience.responsibilities.map((responsibility, respIndex) => (
-                    <div key={respIndex} className="flex items-center space-x-2">
-                      <input
-                        type="text"
-                        value={responsibility}
-                        onChange={(e) => handleResponsibilityChange(experience.id, respIndex, e.target.value)}
-                        placeholder="Describe your responsibilities..."
-                        className="flex-1 px-4 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary-500"
-                      />
-                      {experience.responsibilities.length > 1 && (
-                        <button
-                          onClick={() => removeResponsibility(experience.id, respIndex)}
-                          className="text-red-500 hover:text-red-700 transition-colors"
-                        >
-                          <X className="w-4 h-4" />
-                        </button>
-                      )}
+                    <div key={respIndex} className="relative">
+                      <div className="flex items-start">
+                         <div className="flex-1">
+                            <SmartTextArea
+                                value={responsibility}
+                                onChange={(value) => handleResponsibilityChange(experience.id, respIndex, value)}
+                                placeholder="Describe your responsibilities and achievements..."
+                                rows={3}
+                                type="responsibility"
+                            />
+                         </div>
+                        {experience.responsibilities.length > 1 && (
+                          <button
+                            onClick={() => removeResponsibility(experience.id, respIndex)}
+                            className="text-red-500 hover:text-red-700 transition-colors ml-2 mt-2"
+                          >
+                            <X className="w-4 h-4" />
+                          </button>
+                        )}
+                      </div>
                     </div>
                   ))}
                   <button

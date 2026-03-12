@@ -1,10 +1,15 @@
+import os
+import json
+import html
+from io import BytesIO
+from typing import List, Optional
+
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from pydantic import BaseModel
-from typing import List, Optional
-import os
 from dotenv import load_dotenv
+
 import google.generativeai as genai
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
@@ -12,32 +17,32 @@ from reportlab.lib.units import inch
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak
 from reportlab.lib import colors
 from reportlab.lib.enums import TA_LEFT, TA_CENTER, TA_JUSTIFY
-from io import BytesIO
-import json
-import html
 
-# Load environment variables
+# --- Configuration ---
+
 load_dotenv()
+
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+GEMINI_MODEL_NAME = 'gemini-2.0-flash-lite'
+
+if GEMINI_API_KEY:
+    genai.configure(api_key=GEMINI_API_KEY)
+else:
+    print("Warning: GEMINI_API_KEY not found in environment variables")
 
 app = FastAPI(title="AI Resume Generator API")
 
 # Configure CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://localhost:5174", "http://localhost:3000"],  # Add your frontend URLs
+    allow_origins=["http://localhost:5173", "http://localhost:5174", "http://localhost:3000"], 
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Configure Gemini API
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-if GEMINI_API_KEY:
-    genai.configure(api_key=GEMINI_API_KEY)
-else:
-    print("Warning: GEMINI_API_KEY not found in environment variables")
+# --- Pydantic Models ---
 
-# Pydantic models matching frontend structure
 class PersonalInfo(BaseModel):
     firstName: str
     lastName: str
@@ -63,6 +68,11 @@ class Experience(BaseModel):
     responsibilities: List[str]
     current: bool
 
+class TextEnhancementRequest(BaseModel):
+    text: str
+    # 'summary', 'description', 'responsibility', 'general'
+    type: str
+
 class ResumeData(BaseModel):
     personalInfo: PersonalInfo
     education: List[Education]
@@ -70,9 +80,13 @@ class ResumeData(BaseModel):
     skills: List[str]
     extra: List[str]
 
+# --- Helper Functions ---
+
 def enhance_resume_with_gemini(resume_data: ResumeData) -> dict:
-    """Use Gemini API to enhance resume content for ATS compatibility.
-    Returns a dict with enhanced summary and experience descriptions."""
+    """
+    Use Gemini API to enhance resume content for ATS compatibility.
+    Returns a dict with enhanced summary and experience descriptions.
+    """
     try:
         if not GEMINI_API_KEY:
             return {
@@ -80,9 +94,9 @@ def enhance_resume_with_gemini(resume_data: ResumeData) -> dict:
                 "experiences": {exp.id: exp.responsibilities for exp in resume_data.experience}
             }
         
-        model = genai.GenerativeModel('gemini-2.5-flash-lite')
+        model = genai.GenerativeModel(GEMINI_MODEL_NAME)
         
-        # Enhance professional summary
+        # 1. Enhance professional summary
         summary_prompt = f"""You are an expert resume writer. Rewrite this professional summary to be more ATS-friendly, impactful, and keyword-rich while keeping it concise (2-3 sentences):
 
 Original Summary: {resume_data.personalInfo.summary}
@@ -92,18 +106,15 @@ Return only the enhanced summary text, nothing else."""
         enhanced_summary = resume_data.personalInfo.summary
         try:
             summary_response = model.generate_content(summary_prompt)
-            enhanced_summary = summary_response.text.strip()
+            if summary_response.text:
+                enhanced_summary = summary_response.text.strip()
         except Exception as e:
             print(f"Error enhancing summary: {str(e)}")
         
-        # Enhance experience descriptions
+        # 2. Enhance experience descriptions
         enhanced_experiences = {}
         for exp in resume_data.experience:
-            exp_prompt = f"""You are an expert resume writer. Rewrite these job responsibilities to be more ATS-friendly with:
-1. Strong action verbs (e.g., "Developed", "Implemented", "Led")
-2. Quantifiable achievements where possible
-3. Relevant keywords naturally integrated
-4. Clear, concise bullet points
+            exp_prompt = f"""You are an expert resume writer. Rewrite these job responsibilities to be more ATS-friendly.
 
 Job Title: {exp.jobTitle}
 Company: {exp.company}
@@ -114,8 +125,11 @@ Return only the enhanced bullet points, one per line, starting with "•". Keep 
             
             try:
                 exp_response = model.generate_content(exp_prompt)
-                enhanced_bullets = [line.strip().lstrip('•').strip() for line in exp_response.text.split('\n') if line.strip()]
-                enhanced_experiences[exp.id] = enhanced_bullets if enhanced_bullets else exp.responsibilities
+                if exp_response.text:
+                    enhanced_bullets = [line.strip().lstrip('•').strip() for line in exp_response.text.split('\n') if line.strip()]
+                    enhanced_experiences[exp.id] = enhanced_bullets if enhanced_bullets else exp.responsibilities
+                else:
+                    enhanced_experiences[exp.id] = exp.responsibilities
             except Exception as e:
                 print(f"Error enhancing experience {exp.id}: {str(e)}")
                 enhanced_experiences[exp.id] = exp.responsibilities
@@ -126,13 +140,14 @@ Return only the enhanced bullet points, one per line, starting with "•". Keep 
         }
     except Exception as e:
         print(f"Error calling Gemini API: {str(e)}")
+        # Fallback to original data
         return {
             "summary": resume_data.personalInfo.summary,
             "experiences": {exp.id: exp.responsibilities for exp in resume_data.experience}
         }
 
 def format_resume_text(resume_data: ResumeData) -> str:
-    """Format resume data into text format (fallback if Gemini API fails)."""
+    """Format resume data into plain text format (fallback if Gemini API fails or for logging)."""
     text = f"""
 {resume_data.personalInfo.firstName.upper()} {resume_data.personalInfo.lastName.upper()}
 {resume_data.personalInfo.email} | {resume_data.personalInfo.phone} | {resume_data.personalInfo.address}
@@ -165,19 +180,16 @@ EXPERIENCE
     return text
 
 def create_ats_friendly_pdf(resume_data: ResumeData, enhanced_content: dict) -> BytesIO:
-    """Create an ATS-friendly PDF resume."""
+    """Create an ATS-friendly PDF resume using ReportLab."""
     buffer = BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=letter,
                            rightMargin=72, leftMargin=72,
                            topMargin=72, bottomMargin=18)
     
-    # Container for the 'Flowable' objects
     elements = []
-    
-    # Define styles
     styles = getSampleStyleSheet()
     
-    # Custom styles for ATS-friendly resume
+    # Custom styles
     title_style = ParagraphStyle(
         'CustomTitle',
         parent=styles['Heading1'],
@@ -192,7 +204,7 @@ def create_ats_friendly_pdf(resume_data: ResumeData, enhanced_content: dict) -> 
         'CustomHeading',
         parent=styles['Heading2'],
         fontSize=12,
-        textColor=colors.HexColor('#2c3e50'),
+        textColor=colors.HexColor('#2c3e50'), # Dark Blue-Grey
         spaceAfter=6,
         spaceBefore=12,
         fontName='Helvetica-Bold'
@@ -214,125 +226,141 @@ def create_ats_friendly_pdf(resume_data: ResumeData, enhanced_content: dict) -> 
             return ""
         return html.escape(str(text))
     
-    # Header
+    # 1. Header
     name = f"{resume_data.personalInfo.firstName.upper()} {resume_data.personalInfo.lastName.upper()}"
     elements.append(Paragraph(escape_html(name), title_style))
     elements.append(Spacer(1, 0.1*inch))
     
-    # Contact Information
+    # 2. Contact Information
     contact_info = f"{resume_data.personalInfo.email} | {resume_data.personalInfo.phone}"
     if resume_data.personalInfo.address:
         contact_info += f" | {resume_data.personalInfo.address}"
     elements.append(Paragraph(escape_html(contact_info), normal_style))
     elements.append(Spacer(1, 0.2*inch))
     
-    # Professional Summary (use enhanced version if available)
+    # 3. Professional Summary
     summary_text = enhanced_content.get("summary", resume_data.personalInfo.summary)
     if summary_text:
         elements.append(Paragraph("PROFESSIONAL SUMMARY", heading_style))
         elements.append(Paragraph(escape_html(summary_text), normal_style))
         elements.append(Spacer(1, 0.1*inch))
     
-    # Experience
+    # 4. Experience
     if resume_data.experience:
         elements.append(Paragraph("PROFESSIONAL EXPERIENCE", heading_style))
         for exp in resume_data.experience:
-            # Job title and company
+            # Job title and company line
             job_title_escaped = escape_html(exp.jobTitle)
             company_escaped = escape_html(exp.company) if exp.company else ""
+            
             job_header = f"<b>{job_title_escaped}</b>"
             if company_escaped:
                 job_header += f" | {company_escaped}"
+            
             date_range = f"{exp.startDate} - {'Present' if exp.current else exp.endDate}"
+            
             elements.append(Paragraph(job_header, normal_style))
             elements.append(Paragraph(escape_html(date_range), normal_style))
             elements.append(Spacer(1, 0.05*inch))
             
-            # Responsibilities (use enhanced version if available)
+            # Responsibilities
             enhanced_resps = enhanced_content.get("experiences", {}).get(exp.id, exp.responsibilities)
             for resp in enhanced_resps:
                 resp_escaped = escape_html(str(resp))
                 elements.append(Paragraph(f"• {resp_escaped}", normal_style))
             elements.append(Spacer(1, 0.1*inch))
     
-    # Education
+    # 5. Education
     if resume_data.education:
         elements.append(Paragraph("EDUCATION", heading_style))
         for edu in resume_data.education:
             degree_escaped = escape_html(edu.degree)
-            institution_escaped = escape_html(edu.institution) if edu.institution else ""
-            edu_text = f"<b>{degree_escaped}</b>"
-            if institution_escaped:
-                edu_text += f" | {institution_escaped}"
-            edu_text += f" | {edu.startYear} - {edu.endYear}"
+            institution_escaped = escape_html(edu.institution)
+            elements.append(Paragraph(f"<b>{degree_escaped}</b>", normal_style))
+            
+            edu_details = f"{institution_escaped} | {edu.startYear} - {edu.endYear}"
             if edu.gpa:
-                edu_text += f" | GPA: {escape_html(edu.gpa)}"
-            elements.append(Paragraph(edu_text, normal_style))
-            elements.append(Spacer(1, 0.05*inch))
+                edu_details += f" | GPA: {edu.gpa}"
+            elements.append(Paragraph(escape_html(edu_details), normal_style))
+            elements.append(Spacer(1, 0.1*inch))
     
-    # Skills
+    # 6. Skills
     if resume_data.skills:
         elements.append(Paragraph("SKILLS", heading_style))
-        # Format skills as simple text for better ATS parsing
-        skills_text = ", ".join([escape_html(skill) for skill in resume_data.skills])
+        skills_text = ", ".join([escape_html(s) for s in resume_data.skills])
         elements.append(Paragraph(skills_text, normal_style))
         elements.append(Spacer(1, 0.1*inch))
     
-    # Additional Information
+    # 7. Additional Info
     if resume_data.extra:
         elements.append(Paragraph("ADDITIONAL INFORMATION", heading_style))
         for item in resume_data.extra:
             item_escaped = escape_html(str(item))
             elements.append(Paragraph(f"• {item_escaped}", normal_style))
-    
-    # Build PDF
-    try:
-        doc.build(elements)
-        buffer.seek(0)
-        return buffer
-    except Exception as e:
-        print(f"Error building PDF: {str(e)}")
-        raise
 
-@app.get("/")
-def read_root():
-    return {"message": "AI Resume Generator API is running"}
+    doc.build(elements)
+    buffer.seek(0)
+    return buffer
+
+# --- API Endpoints ---
+
+@app.post("/enhance-text")
+async def enhance_text(request: TextEnhancementRequest):
+    """Enhance specific text segments using Gemini."""
+    if not request.text.strip():
+        return {"enhancedText": ""}
+    
+    if not GEMINI_API_KEY:
+        return {"enhancedText": request.text}
+
+    try:
+        model = genai.GenerativeModel(GEMINI_MODEL_NAME)
+        
+        prompt = ""
+        if request.type == 'summary':
+            prompt = f"""You are an expert resume writer. Rewrite the following professional summary to be more professional, impactful, and ATS-friendly. 
+            Also correct any spelling or grammar mistakes. Keep it concise (2-3 sentences).
+            original: "{request.text}"
+            return only the enhanced text."""
+        elif request.type == 'description' or request.type == 'responsibility':
+            prompt = f"""You are an expert resume writer. Rewrite the following job responsibility or project description to use strong action verbs, be more professional, and impactful.
+            Also correct any spelling or grammar mistakes.
+            original: "{request.text}"
+            return only the enhanced text."""
+        else:
+            prompt = f"""You are an expert editor. Polish the following text for a professional resume, correcting any spelling and grammar errors.
+            original: "{request.text}"
+            return only the enhanced text."""
+
+        response = model.generate_content(prompt)
+        return {"enhancedText": response.text.strip()}
+    except Exception as e:
+        print(f"Error enhancing text: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/generate-resume")
-async def generate_resume(resume_data: ResumeData):
-    """Generate an ATS-friendly resume PDF using Gemini AI."""
+async def generate_resume_endpoint(resume: ResumeData):
+    """Generate the full resume PDF."""
     try:
-        # Enhance resume content with Gemini AI
-        enhanced_content = enhance_resume_with_gemini(resume_data)
+        # 1. Enhance Content
+        enhanced_content = enhance_resume_with_gemini(resume)
         
-        # Create PDF
-        pdf_buffer = create_ats_friendly_pdf(resume_data, enhanced_content)
+        # 2. Generate PDF
+        pdf_buffer = create_ats_friendly_pdf(resume, enhanced_content)
         
-        # Get PDF bytes
-        pdf_bytes = pdf_buffer.getvalue()
-        pdf_buffer.close()
+        # 3. Return PDF
+        headers = {
+            'Content-Disposition': f'attachment; filename="resume_{resume.personalInfo.lastName}.pdf"'
+        }
+        return Response(content=pdf_buffer.getvalue(), headers=headers, media_type="application/pdf")
         
-        # Validate PDF was created
-        if not pdf_bytes or len(pdf_bytes) < 100:
-            raise HTTPException(status_code=500, detail="Failed to generate PDF - PDF buffer is empty or too small")
-        
-        # Return PDF as response
-        return Response(
-            content=pdf_bytes,
-            media_type="application/pdf",
-            headers={
-                "Content-Disposition": f"attachment; filename=\"{resume_data.personalInfo.firstName}_{resume_data.personalInfo.lastName}_Resume.pdf\"",
-                "Content-Length": str(len(pdf_bytes))
-            }
-        )
-    except HTTPException:
-        raise
     except Exception as e:
-        import traceback
-        error_details = traceback.format_exc()
-        print(f"Error generating resume: {error_details}")
-        raise HTTPException(status_code=500, detail=f"Error generating resume: {str(e)}")
+        print(f"Error generating resume: {str(e)}")
+        # Log stack trace in a real app
+        raise HTTPException(status_code=500, detail="Failed to generate resume")
+
+# --- Entry Point ---
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)

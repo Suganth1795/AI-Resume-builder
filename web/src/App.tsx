@@ -7,11 +7,16 @@ import Home from './pages/Home';
 import PersonalInfo from './pages/formSteps/PersonalInfo';
 import Education from './pages/formSteps/Education';
 import Experience from './pages/formSteps/Experience';
+import Projects from './pages/formSteps/Projects';
 import Skills from './pages/formSteps/Skills';
+import Certifications from './pages/formSteps/Certifications';
+import Achievements from './pages/formSteps/Achievements';
 import ExtraInfo from './pages/formSteps/ExtraInfo';
+import Declaration from './pages/formSteps/Declaration';
 import Preview from './pages/preview/Preview';
 import Contact from './pages/Contact';
 import Auth from './pages/Auth';
+import FormLayout from './components/FormLayout';
 import { ResumeProvider } from './context/ResumeContext';
 import { ThemeProvider } from './context/ThemeContext';
 import { AuthProvider } from './context/AuthContext';
@@ -24,11 +29,15 @@ function AnimatedRoutes() {
     <AnimatePresence mode="wait">
       <Routes location={location} key={location.pathname}>
         <Route path="/" element={<Home />} />
-        <Route path="/form/personal" element={<ProtectedRoute><PersonalInfo /></ProtectedRoute>} />
-        <Route path="/form/education" element={<ProtectedRoute><Education /></ProtectedRoute>} />
-        <Route path="/form/experience" element={<ProtectedRoute><Experience /></ProtectedRoute>} />
-        <Route path="/form/skills" element={<ProtectedRoute><Skills /></ProtectedRoute>} />
-        <Route path="/form/extra" element={<ProtectedRoute><ExtraInfo /></ProtectedRoute>} />
+        <Route path="/form/personal" element={<ProtectedRoute><FormLayout><PersonalInfo /></FormLayout></ProtectedRoute>} />
+        <Route path="/form/education" element={<ProtectedRoute><FormLayout><Education /></FormLayout></ProtectedRoute>} />
+        <Route path="/form/experience" element={<ProtectedRoute><FormLayout><Experience /></FormLayout></ProtectedRoute>} />
+        <Route path="/form/projects" element={<ProtectedRoute><FormLayout><Projects /></FormLayout></ProtectedRoute>} />
+        <Route path="/form/skills" element={<ProtectedRoute><FormLayout><Skills /></FormLayout></ProtectedRoute>} />
+        <Route path="/form/certifications" element={<ProtectedRoute><FormLayout><Certifications /></FormLayout></ProtectedRoute>} />
+        <Route path="/form/achievements" element={<ProtectedRoute><FormLayout><Achievements /></FormLayout></ProtectedRoute>} />
+        <Route path="/form/extra" element={<ProtectedRoute><FormLayout><ExtraInfo /></FormLayout></ProtectedRoute>} />
+        <Route path="/form/declaration" element={<ProtectedRoute><FormLayout><Declaration /></FormLayout></ProtectedRoute>} />
         <Route path="/preview" element={<ProtectedRoute><Preview /></ProtectedRoute>} />
         <Route path="/contact" element={<Contact />} />
         <Route path="/auth" element={<Auth />} />
