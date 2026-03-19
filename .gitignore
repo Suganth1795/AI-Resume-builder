@@ -9,7 +9,8 @@ dist/
 build/
 
 # Environment files
-.env
+backend/.env
+backend/.env.*
 .env.local
 .env.*.local
 

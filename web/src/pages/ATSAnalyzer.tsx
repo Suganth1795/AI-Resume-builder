@@ -1,5 +1,6 @@
 import React, { useState, useRef, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
+import API_URL from '../config';
 import {
   Upload,
   FileText,
@@ -232,7 +233,7 @@ function DropZone({ onText }: { onText: (t: string, name: string) => void }) {
     try {
       const fd = new FormData();
       fd.append('file', file);
-      const res = await fetch('http://127.0.0.1:8000/extract-text', { method: 'POST', body: fd });
+      const res = await fetch(`${API_URL}/extract-text`, { method: 'POST', body: fd });
       
       const data = await res.json().catch(() => ({}));
       
@@ -325,7 +326,7 @@ const ATSAnalyzer: React.FC = () => {
     setError('');
     setLoading(true);
     try {
-      const res = await fetch('http://127.0.0.1:8000/analyze', {
+      const res = await fetch(`${API_URL}/analyze`, {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

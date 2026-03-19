@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { motion } from 'framer-motion';
 import { Sparkles, Check, RefreshCw, AlertCircle } from 'lucide-react';
+import API_URL from '../config';
 
 type SmartTextAreaProps = {
   label?: string;
@@ -36,7 +37,7 @@ const SmartTextArea: React.FC<SmartTextAreaProps> = ({
     setErrorMsg('');
 
     try {
-      const response = await fetch('http://127.0.0.1:8000/enhance-text', {
+      const response = await fetch(`${API_URL}/enhance-text`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

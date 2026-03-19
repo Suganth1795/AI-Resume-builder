@@ -40,12 +40,20 @@ else:
 app = FastAPI(title="AI Resume Generator API")
 
 # Configure CORS
+FRONTEND_ORIGINS = os.getenv("FRONTEND_ORIGINS", "").split(",")
+DEFAULT_ORIGINS = [
+    "http://localhost:5173",
+    "http://localhost:5174",
+    "http://localhost:3000",
+    "http://127.0.0.1:5173",
+    "http://127.0.0.1:5174",
+    "http://127.0.0.1:3000",
+]
+ALLOWED_ORIGINS = DEFAULT_ORIGINS + [o.strip() for o in FRONTEND_ORIGINS if o.strip()]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173", "http://localhost:5174", "http://localhost:3000",
-        "http://127.0.0.1:5173", "http://127.0.0.1:5174", "http://127.0.0.1:3000"
-    ],
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
