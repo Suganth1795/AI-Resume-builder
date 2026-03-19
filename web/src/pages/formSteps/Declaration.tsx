@@ -4,7 +4,7 @@ import { useNavigate } from 'react-router-dom';
 import { useResume } from '../../context/ResumeContext';
 import ProgressBar from '../../components/ProgressBar';
 import FormField from '../../components/FormField';
-import StepNavigation from '../../components/StepNavigation';
+
 
 const Declaration: React.FC = () => {
     const { resumeData, updateDeclaration } = useResume();

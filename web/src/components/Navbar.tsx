@@ -24,6 +24,7 @@ const Navbar: React.FC = () => {
   const navigation = [
     { name: 'Home', href: '/' },
     { name: 'Create Resume', href: '/form/personal' },
+    { name: 'ATS Analyzer', href: '/ats-analyzer' },
     { name: 'Contact', href: '/contact' },
   ];
 

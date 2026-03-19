@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React from 'react';
 import { BrowserRouter as Router, Routes, Route, useLocation } from 'react-router-dom';
 import { AnimatePresence } from 'framer-motion';
 import Navbar from './components/Navbar';
@@ -14,6 +14,7 @@ import Achievements from './pages/formSteps/Achievements';
 import ExtraInfo from './pages/formSteps/ExtraInfo';
 import Declaration from './pages/formSteps/Declaration';
 import Preview from './pages/preview/Preview';
+import ATSAnalyzer from './pages/ATSAnalyzer';
 import Contact from './pages/Contact';
 import Auth from './pages/Auth';
 import FormLayout from './components/FormLayout';
@@ -39,6 +40,7 @@ function AnimatedRoutes() {
         <Route path="/form/extra" element={<ProtectedRoute><FormLayout><ExtraInfo /></FormLayout></ProtectedRoute>} />
         <Route path="/form/declaration" element={<ProtectedRoute><FormLayout><Declaration /></FormLayout></ProtectedRoute>} />
         <Route path="/preview" element={<ProtectedRoute><Preview /></ProtectedRoute>} />
+        <Route path="/ats-analyzer" element={<ProtectedRoute><ATSAnalyzer /></ProtectedRoute>} />
         <Route path="/contact" element={<Contact />} />
         <Route path="/auth" element={<Auth />} />
       </Routes>

@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
-import { Sparkles, Check, RefreshCw } from 'lucide-react';
+import { motion } from 'framer-motion';
+import { Sparkles, Check, RefreshCw, AlertCircle } from 'lucide-react';
 
 type SmartTextAreaProps = {
   label?: string;
@@ -9,7 +9,8 @@ type SmartTextAreaProps = {
   placeholder?: string;
   rows?: number;
   required?: boolean;
-  type?: 'summary' | 'responsibility' | 'general';
+  type?: 'summary' | 'responsibility' | 'experience' | 'general';
+  jobDescription?: string;
 };
 
 const SmartTextArea: React.FC<SmartTextAreaProps> = ({
@@ -19,45 +20,52 @@ const SmartTextArea: React.FC<SmartTextAreaProps> = ({
   placeholder,
   rows = 3,
   required,
-  type = 'general'
+  type = 'general',
+  jobDescription = ''
 }) => {
   const [isEnhancing, setIsEnhancing] = useState(false);
   const [originalValue, setOriginalValue] = useState('');
   const [showUndo, setShowUndo] = useState(false);
-
-  // If you can't access backend, set this to true to see UI
-  const ENABLE_AI = true;
+  const [errorMsg, setErrorMsg] = useState('');
 
   const handleEnhance = async () => {
     if (!value.trim()) return;
 
     setIsEnhancing(true);
     setOriginalValue(value);
+    setErrorMsg('');
 
     try {
-        const response = await fetch('http://localhost:8000/enhance-text', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                text: value,
-                type: type === 'summary' ? 'summary' : type === 'responsibility' ? 'responsibility' : 'description'
-            })
-        });
+      const response = await fetch('http://127.0.0.1:8000/enhance-text', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          text: value,
+          type: type,
+          jobDescription: jobDescription || ''
+        })
+      });
 
-        if (response.ok) {
-            const data = await response.json();
-            if (data.enhancedText) {
-                onChange(data.enhancedText);
-                setShowUndo(true);
-                setTimeout(() => setShowUndo(false), 5000); 
-            }
-        } else {
-            console.error('Failed to enhance text');
+      if (response.ok) {
+        const data = await response.json();
+        if (data.enhancedText) {
+          onChange(data.enhancedText);
+          setShowUndo(true);
+          setTimeout(() => setShowUndo(false), 6000);
         }
+      } else if (response.status === 429) {
+        setErrorMsg('Rate limit hit — wait a moment & retry');
+        setTimeout(() => setErrorMsg(''), 5000);
+      } else {
+        setErrorMsg('Enhancement failed');
+        setTimeout(() => setErrorMsg(''), 4000);
+      }
     } catch (e) {
-        console.error("AI service error", e);
+      console.error('AI service error', e);
+      setErrorMsg('Cannot reach AI service');
+      setTimeout(() => setErrorMsg(''), 4000);
     } finally {
-        setIsEnhancing(false);
+      setIsEnhancing(false);
     }
   };
 
@@ -65,6 +73,7 @@ const SmartTextArea: React.FC<SmartTextAreaProps> = ({
     onChange(originalValue);
     setShowUndo(false);
   };
+
 
   return (
     <div className="mb-4">
@@ -75,13 +84,16 @@ const SmartTextArea: React.FC<SmartTextAreaProps> = ({
             {required && <span className="text-red-500 ml-1">*</span>}
           </label>
         )}
-        
+
         {value.length > 10 && (
           <div className="flex items-center space-x-2">
             {showUndo && (
-               <button onClick={handleUndo} className="text-xs text-gray-500 hover:text-gray-700 dark:text-gray-400">
-                   Undo
-               </button>
+              <button
+                onClick={handleUndo}
+                className="text-xs text-gray-500 hover:text-gray-700 dark:text-gray-400 underline"
+              >
+                Undo
+              </button>
             )}
             <motion.button
               whileHover={{ scale: 1.05 }}
@@ -89,8 +101,8 @@ const SmartTextArea: React.FC<SmartTextAreaProps> = ({
               onClick={handleEnhance}
               disabled={isEnhancing}
               className={`flex items-center text-xs px-2 py-1 rounded-md transition-colors ${
-                isEnhancing 
-                  ? 'bg-gray-200 text-gray-500 cursor-not-allowed' 
+                isEnhancing
+                  ? 'bg-gray-200 text-gray-500 cursor-not-allowed'
                   : 'bg-gradient-to-r from-purple-500 to-indigo-600 text-white shadow-sm hover:shadow-md'
               }`}
             >
@@ -104,7 +116,7 @@ const SmartTextArea: React.FC<SmartTextAreaProps> = ({
           </div>
         )}
       </div>
-      
+
       <div className="relative">
         <textarea
           value={value}
@@ -112,7 +124,7 @@ const SmartTextArea: React.FC<SmartTextAreaProps> = ({
           placeholder={placeholder}
           rows={rows}
           className={`w-full px-4 py-3 rounded-lg border transition-all duration-200
-            bg-white dark:bg-gray-800 
+            bg-white dark:bg-gray-800
             text-gray-900 dark:text-white
             placeholder-gray-500 dark:placeholder-gray-400
             focus:outline-none focus:ring-2 focus:ring-primary-500
@@ -120,22 +132,34 @@ const SmartTextArea: React.FC<SmartTextAreaProps> = ({
           `}
         />
         {showUndo && (
-            <motion.div 
-                initial={{ opacity: 0, scale: 0.8 }}
-                animate={{ opacity: 1, scale: 1 }}
-                exit={{ opacity: 0 }}
-                className="absolute bottom-2 right-2 flex items-center bg-green-100 text-green-800 px-2 py-1 rounded text-xs"
-            >
-                <Check className="w-3 h-3 mr-1" />
-                Enhanced
-            </motion.div>
+          <motion.div
+            initial={{ opacity: 0, scale: 0.8 }}
+            animate={{ opacity: 1, scale: 1 }}
+            exit={{ opacity: 0 }}
+            className="absolute bottom-2 right-2 flex items-center bg-green-100 text-green-800 px-2 py-1 rounded text-xs"
+          >
+            <Check className="w-3 h-3 mr-1" />
+            Enhanced!
+          </motion.div>
+        )}
+        {errorMsg && (
+          <motion.div
+            initial={{ opacity: 0, scale: 0.8 }}
+            animate={{ opacity: 1, scale: 1 }}
+            exit={{ opacity: 0 }}
+            className="absolute bottom-2 right-2 flex items-center bg-red-100 text-red-700 px-2 py-1 rounded text-xs max-w-[200px] text-center"
+          >
+            <AlertCircle className="w-3 h-3 mr-1 flex-shrink-0" />
+            {errorMsg}
+          </motion.div>
         )}
       </div>
       <p className="text-xs text-gray-500 mt-1 dark:text-gray-400">
-          Tip: Write drafted content and click 'AI Enhance' to get professional wording.
+        Tip: Write drafted content and click 'AI Enhance' to get professional wording with grammar & spelling corrections.
       </p>
     </div>
   );
 };
 
 export default SmartTextArea;
+

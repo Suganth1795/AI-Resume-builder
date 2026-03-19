@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Command } from 'cmdk';
-import { X, Search, Check, Plus } from 'lucide-react';
+import { X, Search, Plus } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { motion, AnimatePresence } from 'framer-motion';
 

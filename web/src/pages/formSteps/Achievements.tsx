@@ -5,7 +5,7 @@ import { Plus, Trash2 } from 'lucide-react';
 import { useResume } from '../../context/ResumeContext';
 import ProgressBar from '../../components/ProgressBar';
 import FormField from '../../components/FormField';
-import StepNavigation from '../../components/StepNavigation';
+
 
 const Achievements: React.FC = () => {
   const { resumeData, updateAchievements } = useResume();

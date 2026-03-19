@@ -1,41 +1,47 @@
 import os
 import json
 import html
+import time
 from io import BytesIO
 from typing import List, Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from pydantic import BaseModel
 from dotenv import load_dotenv
 
-import google.generativeai as genai
+from groq import Groq
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import inch
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
 from reportlab.lib import colors
-from reportlab.lib.enums import TA_LEFT, TA_CENTER, TA_JUSTIFY
+from reportlab.lib.enums import TA_LEFT, TA_CENTER
 
 # --- Configuration ---
 
 load_dotenv()
 
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-GEMINI_MODEL_NAME = 'gemini-2.0-flash-lite'
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+GROQ_MODEL   = "llama-3.3-70b-versatile"   # fast + high quality
 
-if GEMINI_API_KEY:
-    genai.configure(api_key=GEMINI_API_KEY)
+if GROQ_API_KEY:
+    groq_client = Groq(api_key=GROQ_API_KEY)
+    print(f"✅ Groq client initialised — model: {GROQ_MODEL}")
 else:
-    print("Warning: GEMINI_API_KEY not found in environment variables")
+    groq_client = None
+    print("⚠️  Warning: GROQ_API_KEY not found in environment variables")
 
 app = FastAPI(title="AI Resume Generator API")
 
 # Configure CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://localhost:5174", "http://localhost:3000"], 
+    allow_origins=[
+        "http://localhost:5173", "http://localhost:5174", "http://localhost:3000",
+        "http://127.0.0.1:5173", "http://127.0.0.1:5174", "http://127.0.0.1:3000"
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -70,8 +76,9 @@ class Experience(BaseModel):
 
 class TextEnhancementRequest(BaseModel):
     text: str
-    # 'summary', 'description', 'responsibility', 'general'
+    # 'summary', 'experience', 'responsibility', 'general'
     type: str
+    jobDescription: Optional[str] = None
 
 class ResumeData(BaseModel):
     personalInfo: PersonalInfo
@@ -80,284 +87,648 @@ class ResumeData(BaseModel):
     skills: List[str]
     extra: List[str]
 
+class ATSOptimizationRequest(BaseModel):
+    resumeData: ResumeData
+    jobDescription: str
+
+class ATSScoreRequest(BaseModel):
+    resume_text: str
+    job_description: str
+
+# --- Core Groq helper ---
+
+def groq_chat(prompt: str, system: str = "You are a professional resume writing assistant.") -> str:
+    """
+    Call Groq chat completions and return the assistant message text.
+    Raises an exception on failure — callers handle retries / fallbacks.
+    """
+    completion = groq_client.chat.completions.create(
+        model=GROQ_MODEL,
+        messages=[
+            {"role": "system", "content": system},
+            {"role": "user",   "content": prompt},
+        ],
+        temperature=0.4,
+        max_tokens=1024,
+    )
+    return completion.choices[0].message.content.strip()
+
+
 # --- Helper Functions ---
 
-def enhance_resume_with_gemini(resume_data: ResumeData) -> dict:
+def build_prompt(text: str, text_type: str = "general", job_description: str = "") -> str:
     """
-    Use Gemini API to enhance resume content for ATS compatibility.
-    Returns a dict with enhanced summary and experience descriptions.
+    Build a strict ATS Resume Optimization Engine prompt.
+
+    text_type options:
+      - 'summary'                        → Rewrite as 2-3 impactful ATS-friendly lines
+      - 'experience' or 'responsibility' → Convert to action-verb bullet points
+      - 'general'                        → Fix grammar and clarity only
     """
-    try:
-        if not GEMINI_API_KEY:
-            return {
-                "summary": resume_data.personalInfo.summary,
-                "experiences": {exp.id: exp.responsibilities for exp in resume_data.experience}
-            }
-        
-        model = genai.GenerativeModel(GEMINI_MODEL_NAME)
-        
-        # 1. Enhance professional summary
-        summary_prompt = f"""You are an expert resume writer. Rewrite this professional summary to be more ATS-friendly, impactful, and keyword-rich while keeping it concise (2-3 sentences):
+    if text_type == "summary":
+        type_rules = """TYPE-SPECIFIC RULES:
+- Rewrite into 2-3 lines maximum
+- Make it impactful and ATS-friendly
+- Start with a strong professional opener (e.g. "Results-driven...", "Innovative...", "Detail-oriented...")
+- Naturally weave in relevant keywords from the job description if provided"""
+    elif text_type in ("experience", "responsibility"):
+        type_rules = """TYPE-SPECIFIC RULES:
+- Convert into bullet points (one per line)
+- Each bullet MUST start with a strong action verb (e.g. Developed, Designed, Led, Optimized, Delivered, Implemented, Automated, Streamlined)
+- Add measurable impact where possible (%, time saved, count, performance gain)
+- Keep the same number of bullet points as the input
+- Naturally weave in relevant keywords from the job description if provided"""
+    else:  # general
+        type_rules = """TYPE-SPECIFIC RULES:
+- Fix ALL grammar, spelling, and punctuation mistakes
+- Improve clarity and professional tone
+- Do NOT add or remove information — only polish what is there"""
 
-Original Summary: {resume_data.personalInfo.summary}
+    jd_section = (
+        f"JOB DESCRIPTION (for keyword matching):\n{job_description.strip()}"
+        if job_description.strip()
+        else "JOB DESCRIPTION: (none provided)"
+    )
 
-Return only the enhanced summary text, nothing else."""
-        
-        enhanced_summary = resume_data.personalInfo.summary
-        try:
-            summary_response = model.generate_content(summary_prompt)
-            if summary_response.text:
-                enhanced_summary = summary_response.text.strip()
-        except Exception as e:
-            print(f"Error enhancing summary: {str(e)}")
-        
-        # 2. Enhance experience descriptions
-        enhanced_experiences = {}
-        for exp in resume_data.experience:
-            exp_prompt = f"""You are an expert resume writer. Rewrite these job responsibilities to be more ATS-friendly.
+    return f"""You are an ATS Resume Optimization Engine.
 
-Job Title: {exp.jobTitle}
-Company: {exp.company}
-Responsibilities:
-{chr(10).join([f"- {resp}" for resp in exp.responsibilities])}
+Your job is to strictly correct and enhance resume content.
 
-Return only the enhanced bullet points, one per line, starting with "•". Keep the same number of points."""
-            
-            try:
-                exp_response = model.generate_content(exp_prompt)
-                if exp_response.text:
-                    enhanced_bullets = [line.strip().lstrip('•').strip() for line in exp_response.text.split('\n') if line.strip()]
-                    enhanced_experiences[exp.id] = enhanced_bullets if enhanced_bullets else exp.responsibilities
-                else:
-                    enhanced_experiences[exp.id] = exp.responsibilities
-            except Exception as e:
-                print(f"Error enhancing experience {exp.id}: {str(e)}")
-                enhanced_experiences[exp.id] = exp.responsibilities
-        
-        return {
-            "summary": enhanced_summary,
-            "experiences": enhanced_experiences
-        }
-    except Exception as e:
-        print(f"Error calling Gemini API: {str(e)}")
-        # Fallback to original data
+---
+
+INPUT:
+{text}
+
+TYPE:
+{text_type}
+
+{jd_section}
+
+---
+
+TASKS (MANDATORY):
+
+1. Fix ALL grammar and spelling mistakes (ZERO tolerance — not a single error allowed)
+2. Improve clarity, professionalism, and impact
+3. Use strong action verbs where applicable
+4. Keep content concise and realistic
+5. Preserve original meaning (DO NOT invent fake experience or fabricate details)
+6. If a job description is provided:
+   - Extract the most relevant keywords and skills
+   - Naturally integrate them into the output without keyword stuffing
+
+---
+
+{type_rules}
+
+---
+
+STRICT OUTPUT RULES:
+
+- Return ONLY the improved text
+- NO explanations
+- NO headings
+- NO markdown symbols (no **, no ##, no ```)
+- NO extra commentary or labels
+- NO additional content beyond the enhanced text itself
+
+---
+
+SELF-CHECK (MANDATORY BEFORE OUTPUT):
+
+- Ensure zero grammar mistakes
+- Ensure zero spelling mistakes
+- Ensure clean and readable format
+- Ensure all rules above are followed strictly
+
+If ANY rule is violated → FIX before output.
+
+---
+
+FINAL OUTPUT:
+Return only the improved version of the input."""
+
+
+def enhance_resume_with_groq(resume_data: ResumeData) -> dict:
+    """
+    Use Groq to enhance resume content for ATS compatibility.
+    Returns a dict with enhanced summary and experience bullet lists.
+    Falls back to originals on any error.
+    """
+    if not groq_client:
         return {
             "summary": resume_data.personalInfo.summary,
-            "experiences": {exp.id: exp.responsibilities for exp in resume_data.experience}
+            "experiences": {exp.id: exp.responsibilities for exp in resume_data.experience},
         }
 
+    # 1. Enhance professional summary
+    enhanced_summary = resume_data.personalInfo.summary
+    try:
+        summary_prompt = build_prompt(
+            text=resume_data.personalInfo.summary,
+            text_type="summary",
+        )
+        enhanced_summary = groq_chat(summary_prompt)
+    except Exception as e:
+        print(f"[generate-resume] Error enhancing summary: {e}")
+
+    # 2. Enhance experience descriptions
+    enhanced_experiences: dict = {}
+    for exp in resume_data.experience:
+        raw = "\n".join(f"- {r}" for r in exp.responsibilities)
+        exp_prompt = build_prompt(
+            text=f"Job Title: {exp.jobTitle}\nCompany: {exp.company}\nResponsibilities:\n{raw}",
+            text_type="experience",
+        )
+        try:
+            result = groq_chat(exp_prompt)
+            bullets = [
+                line.lstrip("•-* ").strip()
+                for line in result.split("\n")
+                if line.strip()
+            ]
+            enhanced_experiences[exp.id] = bullets if bullets else exp.responsibilities
+        except Exception as e:
+            print(f"[generate-resume] Error enhancing exp {exp.id}: {e}")
+            enhanced_experiences[exp.id] = exp.responsibilities
+
+    return {"summary": enhanced_summary, "experiences": enhanced_experiences}
+
+
 def format_resume_text(resume_data: ResumeData) -> str:
-    """Format resume data into plain text format (fallback if Gemini API fails or for logging)."""
-    text = f"""
-{resume_data.personalInfo.firstName.upper()} {resume_data.personalInfo.lastName.upper()}
-{resume_data.personalInfo.email} | {resume_data.personalInfo.phone} | {resume_data.personalInfo.address}
-
-PROFESSIONAL SUMMARY
-{resume_data.personalInfo.summary}
-
-EXPERIENCE
-"""
+    """Format resume data into plain text (used by /optimize-ats)."""
+    text = (
+        f"{resume_data.personalInfo.firstName.upper()} {resume_data.personalInfo.lastName.upper()}\n"
+        f"{resume_data.personalInfo.email} | {resume_data.personalInfo.phone} | {resume_data.personalInfo.address}\n\n"
+        f"PROFESSIONAL SUMMARY\n{resume_data.personalInfo.summary}\n\nEXPERIENCE\n"
+    )
     for exp in resume_data.experience:
         text += f"\n{exp.jobTitle}\n{exp.company} | {exp.startDate} - {'Present' if exp.current else exp.endDate}\n"
         for resp in exp.responsibilities:
             text += f"• {resp}\n"
-    
+
     text += "\nEDUCATION\n"
     for edu in resume_data.education:
         text += f"\n{edu.degree}\n{edu.institution} | {edu.startYear} - {edu.endYear}"
         if edu.gpa:
             text += f" | GPA: {edu.gpa}"
         text += "\n"
-    
-    text += "\nSKILLS\n"
-    text += ", ".join(resume_data.skills)
-    
+
+    text += "\nSKILLS\n" + ", ".join(resume_data.skills)
+
     if resume_data.extra:
         text += "\n\nADDITIONAL INFORMATION\n"
         for item in resume_data.extra:
             text += f"• {item}\n"
-    
+
     return text
+
 
 def create_ats_friendly_pdf(resume_data: ResumeData, enhanced_content: dict) -> BytesIO:
     """Create an ATS-friendly PDF resume using ReportLab."""
     buffer = BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=letter,
-                           rightMargin=72, leftMargin=72,
-                           topMargin=72, bottomMargin=18)
-    
+    doc = SimpleDocTemplate(
+        buffer, pagesize=letter,
+        rightMargin=72, leftMargin=72,
+        topMargin=72, bottomMargin=18,
+    )
+
     elements = []
     styles = getSampleStyleSheet()
-    
-    # Custom styles
+
     title_style = ParagraphStyle(
-        'CustomTitle',
-        parent=styles['Heading1'],
-        fontSize=20,
-        textColor=colors.HexColor('#1a1a1a'),
-        spaceAfter=6,
-        alignment=TA_CENTER,
-        fontName='Helvetica-Bold'
+        "CustomTitle", parent=styles["Heading1"],
+        fontSize=20, textColor=colors.HexColor("#1a1a1a"),
+        spaceAfter=6, alignment=TA_CENTER, fontName="Helvetica-Bold",
     )
-    
     heading_style = ParagraphStyle(
-        'CustomHeading',
-        parent=styles['Heading2'],
-        fontSize=12,
-        textColor=colors.HexColor('#2c3e50'), # Dark Blue-Grey
-        spaceAfter=6,
-        spaceBefore=12,
-        fontName='Helvetica-Bold'
+        "CustomHeading", parent=styles["Heading2"],
+        fontSize=12, textColor=colors.HexColor("#2c3e50"),
+        spaceAfter=6, spaceBefore=12, fontName="Helvetica-Bold",
     )
-    
     normal_style = ParagraphStyle(
-        'CustomNormal',
-        parent=styles['Normal'],
-        fontSize=10,
-        textColor=colors.HexColor('#333333'),
-        spaceAfter=6,
-        alignment=TA_LEFT,
-        fontName='Helvetica'
+        "CustomNormal", parent=styles["Normal"],
+        fontSize=10, textColor=colors.HexColor("#333333"),
+        spaceAfter=6, alignment=TA_LEFT, fontName="Helvetica",
     )
-    
-    def escape_html(text: str) -> str:
-        """Escape HTML special characters for ReportLab Paragraph."""
-        if not text:
-            return ""
-        return html.escape(str(text))
-    
-    # 1. Header
-    name = f"{resume_data.personalInfo.firstName.upper()} {resume_data.personalInfo.lastName.upper()}"
-    elements.append(Paragraph(escape_html(name), title_style))
-    elements.append(Spacer(1, 0.1*inch))
-    
-    # 2. Contact Information
-    contact_info = f"{resume_data.personalInfo.email} | {resume_data.personalInfo.phone}"
+
+    def esc(t: str) -> str:
+        return html.escape(str(t)) if t else ""
+
+    # Header
+    elements.append(Paragraph(esc(f"{resume_data.personalInfo.firstName.upper()} {resume_data.personalInfo.lastName.upper()}"), title_style))
+    elements.append(Spacer(1, 0.1 * inch))
+
+    # Contact
+    contact = f"{resume_data.personalInfo.email} | {resume_data.personalInfo.phone}"
     if resume_data.personalInfo.address:
-        contact_info += f" | {resume_data.personalInfo.address}"
-    elements.append(Paragraph(escape_html(contact_info), normal_style))
-    elements.append(Spacer(1, 0.2*inch))
-    
-    # 3. Professional Summary
+        contact += f" | {resume_data.personalInfo.address}"
+    elements.append(Paragraph(esc(contact), normal_style))
+    elements.append(Spacer(1, 0.2 * inch))
+
+    # Summary
     summary_text = enhanced_content.get("summary", resume_data.personalInfo.summary)
     if summary_text:
         elements.append(Paragraph("PROFESSIONAL SUMMARY", heading_style))
-        elements.append(Paragraph(escape_html(summary_text), normal_style))
-        elements.append(Spacer(1, 0.1*inch))
-    
-    # 4. Experience
+        elements.append(Paragraph(esc(summary_text), normal_style))
+        elements.append(Spacer(1, 0.1 * inch))
+
+    # Experience
     if resume_data.experience:
         elements.append(Paragraph("PROFESSIONAL EXPERIENCE", heading_style))
         for exp in resume_data.experience:
-            # Job title and company line
-            job_title_escaped = escape_html(exp.jobTitle)
-            company_escaped = escape_html(exp.company) if exp.company else ""
-            
-            job_header = f"<b>{job_title_escaped}</b>"
-            if company_escaped:
-                job_header += f" | {company_escaped}"
-            
-            date_range = f"{exp.startDate} - {'Present' if exp.current else exp.endDate}"
-            
+            job_header = f"<b>{esc(exp.jobTitle)}</b>"
+            if exp.company:
+                job_header += f" | {esc(exp.company)}"
             elements.append(Paragraph(job_header, normal_style))
-            elements.append(Paragraph(escape_html(date_range), normal_style))
-            elements.append(Spacer(1, 0.05*inch))
-            
-            # Responsibilities
-            enhanced_resps = enhanced_content.get("experiences", {}).get(exp.id, exp.responsibilities)
-            for resp in enhanced_resps:
-                resp_escaped = escape_html(str(resp))
-                elements.append(Paragraph(f"• {resp_escaped}", normal_style))
-            elements.append(Spacer(1, 0.1*inch))
-    
-    # 5. Education
+            elements.append(Paragraph(esc(f"{exp.startDate} - {'Present' if exp.current else exp.endDate}"), normal_style))
+            elements.append(Spacer(1, 0.05 * inch))
+            for resp in enhanced_content.get("experiences", {}).get(exp.id, exp.responsibilities):
+                elements.append(Paragraph(f"• {esc(resp)}", normal_style))
+            elements.append(Spacer(1, 0.1 * inch))
+
+    # Education
     if resume_data.education:
         elements.append(Paragraph("EDUCATION", heading_style))
         for edu in resume_data.education:
-            degree_escaped = escape_html(edu.degree)
-            institution_escaped = escape_html(edu.institution)
-            elements.append(Paragraph(f"<b>{degree_escaped}</b>", normal_style))
-            
-            edu_details = f"{institution_escaped} | {edu.startYear} - {edu.endYear}"
+            elements.append(Paragraph(f"<b>{esc(edu.degree)}</b>", normal_style))
+            edu_line = f"{esc(edu.institution)} | {edu.startYear} - {edu.endYear}"
             if edu.gpa:
-                edu_details += f" | GPA: {edu.gpa}"
-            elements.append(Paragraph(escape_html(edu_details), normal_style))
-            elements.append(Spacer(1, 0.1*inch))
-    
-    # 6. Skills
+                edu_line += f" | GPA: {edu.gpa}"
+            elements.append(Paragraph(edu_line, normal_style))
+            elements.append(Spacer(1, 0.1 * inch))
+
+    # Skills
     if resume_data.skills:
         elements.append(Paragraph("SKILLS", heading_style))
-        skills_text = ", ".join([escape_html(s) for s in resume_data.skills])
-        elements.append(Paragraph(skills_text, normal_style))
-        elements.append(Spacer(1, 0.1*inch))
-    
-    # 7. Additional Info
+        elements.append(Paragraph(", ".join(esc(s) for s in resume_data.skills), normal_style))
+        elements.append(Spacer(1, 0.1 * inch))
+
+    # Additional Info
     if resume_data.extra:
         elements.append(Paragraph("ADDITIONAL INFORMATION", heading_style))
         for item in resume_data.extra:
-            item_escaped = escape_html(str(item))
-            elements.append(Paragraph(f"• {item_escaped}", normal_style))
+            elements.append(Paragraph(f"• {esc(item)}", normal_style))
 
     doc.build(elements)
     buffer.seek(0)
     return buffer
 
+
 # --- API Endpoints ---
 
 @app.post("/enhance-text")
 async def enhance_text(request: TextEnhancementRequest):
-    """Enhance specific text segments using Gemini."""
+    """Enhance specific text segments using the strict ATS Optimization Engine prompt via Groq."""
     if not request.text.strip():
         return {"enhancedText": ""}
-    
-    if not GEMINI_API_KEY:
+
+    if not groq_client:
         return {"enhancedText": request.text}
 
-    try:
-        model = genai.GenerativeModel(GEMINI_MODEL_NAME)
-        
-        prompt = ""
-        if request.type == 'summary':
-            prompt = f"""You are an expert resume writer. Rewrite the following professional summary to be more professional, impactful, and ATS-friendly. 
-            Also correct any spelling or grammar mistakes. Keep it concise (2-3 sentences).
-            original: "{request.text}"
-            return only the enhanced text."""
-        elif request.type == 'description' or request.type == 'responsibility':
-            prompt = f"""You are an expert resume writer. Rewrite the following job responsibility or project description to use strong action verbs, be more professional, and impactful.
-            Also correct any spelling or grammar mistakes.
-            original: "{request.text}"
-            return only the enhanced text."""
-        else:
-            prompt = f"""You are an expert editor. Polish the following text for a professional resume, correcting any spelling and grammar errors.
-            original: "{request.text}"
-            return only the enhanced text."""
+    # Map frontend type aliases to canonical types
+    canonical_type = request.type
+    if request.type == "description":
+        canonical_type = "experience"
 
-        response = model.generate_content(prompt)
-        return {"enhancedText": response.text.strip()}
+    prompt = build_prompt(
+        text=request.text,
+        text_type=canonical_type,
+        job_description=request.jobDescription or "",
+    )
+
+    # Retry up to 2 times on transient errors
+    max_retries = 2
+    for attempt in range(max_retries + 1):
+        try:
+            enhanced = groq_chat(prompt)
+            return {"enhancedText": enhanced or request.text}
+        except Exception as e:
+            err_str = str(e)
+            print(f"[enhance-text] Attempt {attempt + 1} error: {err_str[:200]}")
+
+            # Detect rate limit — tell the client to back off
+            if "429" in err_str or "rate_limit" in err_str.lower() or "quota" in err_str.lower():
+                raise HTTPException(
+                    status_code=429,
+                    detail="Groq API rate limit reached. Please wait a moment and try again.",
+                )
+
+            if attempt == max_retries:
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"AI enhancement failed: {err_str[:200]}",
+                )
+
+            time.sleep(1)
+
+
+
+# --- ATS Score Endpoint ---
+
+@app.post("/ats-score")
+async def ats_score(request: ATSScoreRequest):
+    """
+    Analyse a resume against a job description and return a structured ATS score report.
+    Returns: ats_score, matched_keywords, missing_keywords, suggestions.
+    """
+    if not groq_client:
+        raise HTTPException(status_code=500, detail="GROQ_API_KEY not configured")
+
+    if not request.resume_text.strip() or not request.job_description.strip():
+        raise HTTPException(status_code=400, detail="resume_text and job_description are required")
+
+    prompt = f"""RESUME:
+{request.resume_text}
+
+JOB DESCRIPTION:
+{request.job_description}
+
+---
+
+TASKS (MANDATORY):
+
+1. Extract important keywords from the job description
+2. Extract relevant keywords from the resume
+3. Compare both and identify:
+   - matched keywords
+   - missing keywords
+4. Evaluate resume quality based on:
+   - skills
+   - action verbs
+   - clarity
+   - measurable impact
+
+---
+
+OUTPUT FORMAT (STRICT — FOLLOW EXACTLY):
+
+ATS Score: <number out of 100>
+
+Matched Keywords:
+- keyword1
+- keyword2
+- keyword3
+
+Missing Keywords:
+- keyword1
+- keyword2
+- keyword3
+
+Suggestions:
+- Add missing technical skills from job description
+- Include measurable achievements (%, time saved, performance)
+- Improve use of action verbs and clarity
+
+---
+
+RULES:
+
+- Be realistic in scoring (no random 90+ scores)
+- Focus on technical skills, tools, and action verbs
+- Keep output clean and structured
+- Do NOT include explanations
+- Do NOT add extra sections
+- Ensure Suggestions section ALWAYS contains at least 3 points
+
+---
+
+SELF-CHECK:
+
+- Ensure all sections are present
+- Ensure Suggestions is NOT empty
+- Ensure strict format is followed
+
+If anything is missing → FIX before output.
+
+Return ONLY the final output."""
+
+    try:
+        raw = groq_chat(prompt, system="You are a strict ATS Resume Scoring Engine. Follow the output format exactly.")
     except Exception as e:
-        print(f"Error enhancing text: {str(e)}")
+        err_str = str(e)
+        if "429" in err_str or "rate_limit" in err_str.lower():
+            raise HTTPException(status_code=429, detail="Groq API rate limit reached. Please wait a moment.")
+        raise HTTPException(status_code=500, detail=f"AI scoring failed: {err_str[:200]}")
+
+    # --- Parse structured plain-text output ---
+    import re
+
+    def extract_score(text: str) -> int:
+        match = re.search(r"ATS Score:\s*(\d+)", text, re.IGNORECASE)
+        return int(match.group(1)) if match else 0
+
+    def extract_list_section(text: str, header: str) -> list[str]:
+        """
+        Extract bullet-list items under a given section header.
+        Stops at the next section header (a line NOT starting with -).
+        """
+        pattern = rf"{re.escape(header)}\s*\n((?:\s*-[^\n]+\n?)+)"
+        match = re.search(pattern, text, re.IGNORECASE)
+        if not match:
+            return []
+        block = match.group(1)
+        items = [line.lstrip("- ").strip() for line in block.splitlines() if line.strip().startswith("-")]
+        return [i for i in items if i]
+
+    ats_score_val = extract_score(raw)
+    matched   = extract_list_section(raw, "Matched Keywords:")
+    missing   = extract_list_section(raw, "Missing Keywords:")
+    suggestions = extract_list_section(raw, "Suggestions:")
+
+    # Fallback: ensure suggestions is non-empty
+    if not suggestions:
+        suggestions = [
+            "Add missing technical skills from the job description.",
+            "Include measurable achievements (%, time saved, performance boost).",
+            "Strengthen use of action verbs and improve overall clarity.",
+        ]
+
+    return {
+        "ats_score": ats_score_val,
+        "matched_keywords": matched,
+        "missing_keywords": missing,
+        "suggestions": suggestions,
+        "raw": raw,   # keep raw for debugging
+    }
+
+
+@app.post("/optimize-ats")
+async def optimize_ats(request: ATSOptimizationRequest):
+    """Analyse and improve a resume against a job description via Groq."""
+    if not groq_client:
+        raise HTTPException(status_code=500, detail="GROQ_API_KEY not configured")
+
+    try:
+        resume_text = format_resume_text(request.resumeData)
+
+        base_prompt = """You are an expert ATS Resume Optimization Engine.
+
+Your job is to analyze and improve a resume based on a job description.
+
+---
+
+INPUT:
+Resume:
+{resume_text}
+
+Job Description:
+{job_description}
+
+---
+
+TASKS (MANDATORY):
+
+1. Fix ALL grammar and spelling mistakes (ZERO errors allowed)
+2. Improve clarity, impact, and professionalism
+3. Use strong action verbs (Developed, Designed, Implemented, Optimized, Led)
+4. Add measurable impact wherever possible (%, time saved, performance)
+5. Extract and match keywords from the job description
+6. Identify missing keywords
+7. Rewrite summary and experience for ATS optimization
+
+---
+
+OUTPUT FORMAT (STRICT — FOLLOW EXACTLY):
+
+ATS Score: <number out of 100>
+
+Matched Keywords:
+- keyword1
+- keyword2
+- keyword3
+
+Missing Keywords:
+- keyword1
+- keyword2
+- keyword3
+
+Improved Summary:
+<2-3 lines, ATS-optimized, grammatically correct>
+
+Improved Experience Points:
+- bullet point 1 (strong verb + impact + corrected grammar)
+- bullet point 2
+- bullet point 3
+
+Suggestions:
+- Add missing technical skills from job description
+- Include measurable achievements (%, time saved, performance)
+- Improve use of action verbs and clarity
+
+---
+
+RULES:
+
+- Fix ALL grammar and spelling mistakes strictly
+- Do NOT include explanations
+- Do NOT add extra sections
+- Do NOT change output format
+- Ensure output is clean, structured, and readable
+
+Return ONLY the final output."""
+
+        prompt = base_prompt.replace("{resume_text}", resume_text).replace("{job_description}", request.jobDescription)
+        analysis = groq_chat(prompt)
+        return {"analysis": analysis}
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[optimize-ats] Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.post("/generate-resume")
 async def generate_resume_endpoint(resume: ResumeData):
-    """Generate the full resume PDF."""
+    """Generate the full ATS-optimised resume PDF."""
     try:
-        # 1. Enhance Content
-        enhanced_content = enhance_resume_with_gemini(resume)
-        
-        # 2. Generate PDF
+        enhanced_content = enhance_resume_with_groq(resume)
         pdf_buffer = create_ats_friendly_pdf(resume, enhanced_content)
-        
-        # 3. Return PDF
         headers = {
-            'Content-Disposition': f'attachment; filename="resume_{resume.personalInfo.lastName}.pdf"'
+            "Content-Disposition": f'attachment; filename="resume_{resume.personalInfo.lastName}.pdf"'
         }
         return Response(content=pdf_buffer.getvalue(), headers=headers, media_type="application/pdf")
-        
     except Exception as e:
-        print(f"Error generating resume: {str(e)}")
-        # Log stack trace in a real app
+        print(f"[generate-resume] Error: {e}")
         raise HTTPException(status_code=500, detail="Failed to generate resume")
+
+
+# --- File Text Extraction Endpoint ---
+
+from fastapi.responses import JSONResponse
+
+@app.post("/extract-text")
+async def extract_text(file: UploadFile = File(...)):
+    """
+    Accept a PDF, DOCX, or TXT upload and return its plain text content.
+    Used by the ATS Analyzer's 'Upload Resume' button.
+    """
+    filename = (file.filename or "").lower()
+    content  = await file.read()
+
+    try:
+        if filename.endswith(".pdf"):
+            import pdfplumber
+            text_blocks = []
+            with pdfplumber.open(BytesIO(content)) as pdf:
+                for page in pdf.pages:
+                    page_text = page.extract_text()
+                    if page_text:
+                        text_blocks.append(page_text)
+            text = "\n".join(text_blocks)
+
+        elif filename.endswith(".docx"):
+            import docx
+            doc = docx.Document(BytesIO(content))
+            text = "\n".join([para.text for para in doc.paragraphs])
+
+        elif filename.endswith(".txt"):
+            text = content.decode("utf-8", errors="replace")
+
+        else:
+            return JSONResponse(status_code=400, content={"error": "Unsupported file type"})
+
+        text = text.strip()
+        if len(text) < 20:
+            return JSONResponse(
+                status_code=400, 
+                content={"error": "No text extracted (possibly scanned or image-based file)"}
+            )
+
+        return {"text": text, "filename": file.filename}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[extract-text] Error: {e}")
+        return JSONResponse(status_code=500, content={"error": f"Text extraction failed: {str(e)[:200]}"})
+
+
+# --- /analyze alias (clean public API for the ATS Analyzer UI) ---
+
+class AnalyzeRequest(BaseModel):
+    resumeText: str
+    jobDescription: str
+    jobRole: Optional[str] = None
+
+@app.post("/analyze")
+async def analyze(request: AnalyzeRequest):
+    """
+    Public-facing ATS analyzer endpoint called by the frontend.
+    Combines jobRole + jobDescription and delegates to /ats-score logic.
+    """
+    # Merge job role into description for richer keyword context
+    combined_jd = request.jobDescription
+    if request.jobRole:
+        combined_jd = f"Job Role: {request.jobRole}\n\n{combined_jd}".strip()
+
+    if not request.resumeText.strip() or not combined_jd.strip():
+        raise HTTPException(status_code=400, detail="resumeText and jobDescription / jobRole are required.")
+
+    # Reuse shared scoring logic via the ATSScoreRequest model
+    sub = ATSScoreRequest(resume_text=request.resumeText, job_description=combined_jd)
+    return await ats_score(sub)
+
 
 # --- Entry Point ---
 

@@ -17,11 +17,6 @@ const LivePreview: React.FC = () => {
 
   const { personalInfo, education, experience, projects, skills, certifications, achievements, extra, declaration } = debouncedResumeData;
 
-  const formatDate = (dateString: string) => {
-      if (!dateString) return '';
-      // Simple pass-through or format if needed. Assuming user enters text like "Aug 2023"
-      return dateString;
-  };
 
   return (
     <div className="bg-white text-black p-[40px] shadow-2xl min-h-[1100px] w-full text-[12px] font-sans leading-relaxed" id="resume-preview">
