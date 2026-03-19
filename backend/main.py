@@ -1,4 +1,5 @@
 import os
+import re
 import json
 import html
 import time
@@ -7,9 +8,12 @@ from typing import List, Optional
 
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import Response
+from fastapi.responses import Response, JSONResponse
 from pydantic import BaseModel
 from dotenv import load_dotenv
+
+import pdfplumber
+import docx
 
 from groq import Groq
 from reportlab.lib.pagesizes import letter
@@ -26,11 +30,11 @@ load_dotenv()
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 GROQ_MODEL   = "llama-3.3-70b-versatile"   # fast + high quality
 
+groq_client: Optional[Groq] = None
 if GROQ_API_KEY:
     groq_client = Groq(api_key=GROQ_API_KEY)
     print(f"✅ Groq client initialised — model: {GROQ_MODEL}")
 else:
-    groq_client = None
     print("⚠️  Warning: GROQ_API_KEY not found in environment variables")
 
 app = FastAPI(title="AI Resume Generator API")
@@ -102,6 +106,8 @@ def groq_chat(prompt: str, system: str = "You are a professional resume writing 
     Call Groq chat completions and return the assistant message text.
     Raises an exception on failure — callers handle retries / fallbacks.
     """
+    if groq_client is None:
+        raise RuntimeError("Groq client is not initialised. Check GROQ_API_KEY.")
     completion = groq_client.chat.completions.create(
         model=GROQ_MODEL,
         messages=[
@@ -512,7 +518,6 @@ Return ONLY the final output."""
         raise HTTPException(status_code=500, detail=f"AI scoring failed: {err_str[:200]}")
 
     # --- Parse structured plain-text output ---
-    import re
 
     def extract_score(text: str) -> int:
         match = re.search(r"ATS Score:\s*(\d+)", text, re.IGNORECASE)
@@ -655,8 +660,6 @@ async def generate_resume_endpoint(resume: ResumeData):
 
 # --- File Text Extraction Endpoint ---
 
-from fastapi.responses import JSONResponse
-
 @app.post("/extract-text")
 async def extract_text(file: UploadFile = File(...)):
     """
@@ -668,7 +671,6 @@ async def extract_text(file: UploadFile = File(...)):
 
     try:
         if filename.endswith(".pdf"):
-            import pdfplumber
             text_blocks = []
             with pdfplumber.open(BytesIO(content)) as pdf:
                 for page in pdf.pages:
@@ -678,9 +680,8 @@ async def extract_text(file: UploadFile = File(...)):
             text = "\n".join(text_blocks)
 
         elif filename.endswith(".docx"):
-            import docx
-            doc = docx.Document(BytesIO(content))
-            text = "\n".join([para.text for para in doc.paragraphs])
+            document = docx.Document(BytesIO(content))
+            text = "\n".join([para.text for para in document.paragraphs])
 
         elif filename.endswith(".txt"):
             text = content.decode("utf-8", errors="replace")
